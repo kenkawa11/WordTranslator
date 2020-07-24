@@ -1,23 +1,20 @@
 ﻿using System;
+using System.Windows.Forms;
+using System.IO;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using Microsoft.Office.Interop.Word;
 using System.Text.RegularExpressions;
-using System.Net.Http;
-using System.IO;
-using AngleSharp.Html.Parser;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using Task = System.Threading.Tasks.Task;
 using System.Web;
 using Microsoft.Office.Core;
 using Shape = Microsoft.Office.Interop.Word.Shape;
-using System.Security.Cryptography.X509Certificates;
-using AngleSharp.Common;
-using Microsoft.Office.Interop.Excel;
 using Application = Microsoft.Office.Interop.Word.Application;
+using System.Web.ModelBinding;
+using System.Runtime.InteropServices;
 
 namespace WordTranslator
 {
@@ -60,11 +57,11 @@ namespace WordTranslator
 
     public abstract class BaseEngine
     {
-
         protected static IWebDriver driver;
         protected int maxLength = 300;
+        protected long timelimit = 5000;
 
-        public BaseEngine(string fn)
+        public BaseEngine()
         {
             var driverService = ChromeDriverService.CreateDefaultService();
             driverService.HideCommandPromptWindow = true;
@@ -72,9 +69,9 @@ namespace WordTranslator
             //options.AddArgument("--headless");
             driver = new ChromeDriver(driverService, options);
         }
-        public async Task AsynWdProcess()
+        public async Task AsynWdProcess(string fn)
         {
-            var word = new Word(@"C:\test\test.docx");
+            var word = new Word(fn);
             var document = word.document;
             var para = document.Paragraphs;
 
@@ -96,22 +93,9 @@ namespace WordTranslator
             for (var i = 1; i <= para.Count; i++)
             {
                 var text = para[i].Range.Text;
-
-                var delim = text.Substring(text.Length - 1);
-                if (delim == "\n" || delim == "\r" || delim == "\a" || delim == "\f")
-                {
-                    if (text.Length > 1)
-                    {
-                        var delim2 = text.Substring(text.Length - 2, 1);
-                        if (delim2 == "\n" || delim2 == "\r" || delim2 == "\a" || delim2 == "\f")
-                        {
-                            delim = delim2 + delim;
-                        }
-                    }
-
-                }
-
                 para[i].Range.Select();
+
+
                 var engtext = await AsyncRetEngText(text);
                 if(engtext!="")
                 {
@@ -136,10 +120,16 @@ namespace WordTranslator
                 var shtext = txtShape.TextFrame.TextRange.Text;
                 txtShape.TextFrame.TextRange.Text= await AsyncRetEngText(shtext);
             }
+
+            string dir = Path.GetDirectoryName(fn);
+            string FileName = Path.GetFileNameWithoutExtension(fn);
+            word.SaveAs(dir + "translated_" + FileName + ".docx");
+
+            word.Dispose();
         }
 
 
-        public void GetShapeText(Shape aShape, ref List<Shape> textlist)
+        protected void GetShapeText(Shape aShape, ref List<Shape> textlist)
         {
             aShape.Select();
 
@@ -169,10 +159,9 @@ namespace WordTranslator
 
 
 
-        private void divideText(string text, ref List<string> divided)
+        protected void DivideText(string text, ref List<string> divided)
         {
             int pos;
-            pos = 0;
             while (true)
             {
                 if(text.Length<=maxLength)
@@ -212,7 +201,7 @@ namespace WordTranslator
             }
         }
 
-        private async Task<string >AsyncRetEngText(string text)
+        protected async Task<string >AsyncRetEngText(string text)
         {
             var reg = new Regex("[\n　\r \t\vt\f\a]");
             var replaced = text.Trim();
@@ -220,9 +209,6 @@ namespace WordTranslator
 
             var divided = new List<string>();
             
-           
-
-
             if(replaced=="")
             {
                 return "";
@@ -236,7 +222,7 @@ namespace WordTranslator
 
             }
 
-            divideText(text, ref divided);
+            DivideText(text, ref divided);
 
             var divengText = "";
             foreach (var v in divided)
@@ -254,39 +240,58 @@ namespace WordTranslator
             await Task.Delay(1);
             return text;
         }
+
+
+        private string CheckDelim(string text)
+        {
+            string delim = text.Substring(text.Length - 1);
+            if (delim == "\n" || delim == "\r" || delim == "\a" || delim == "\f")
+            {
+                if (text.Length > 1)
+                {
+                    var delim2 = text.Substring(text.Length - 2, 1);
+                    if (delim2 == "\n" || delim2 == "\r" || delim2 == "\a" || delim2 == "\f")
+                    {
+                        delim = delim2 + delim;
+                    }
+                }
+            }
+            return delim;
+        }
+
+        public void Dispose()
+        {
+            driver.Quit();
+        }
     }
+
 
     public class Google:BaseEngine
     {
-        private string targetUrl="https://translate.google.co.jp";
+        private string targetUrl=@"https://translate.google.co.jp";
         private string lang= @"/#ja/en/";
-
-        public Google(string fn) :base(fn)
+        
+        public Google()
         {
-
+            maxLength = 4500;
+            var handle = driver.WindowHandles;
         }
-
-        public async Task<string> AsyncTranslateSentence(string sntnc)
+        public async Task<string> AsyncTranslateUrlGet(string sntnc)
         {
             var regptn = "(tlid-translation translation.*?\"\">)<span.*?>(.+?)</span>";
             var targeturl = targetUrl +lang+ HttpUtility.UrlEncode(sntnc);
             driver.Navigate().GoToUrl(targeturl);
             var html = driver.PageSource;
-
             var reg = new Regex(regptn);
-
             await Task.Delay(300);
-
-            var l = driver.FindElement(By.ClassName("result-shield-container")).Text;
+            //var l = driver.FindElement(By.ClassName("result-shield-container")).Text;
             var m = reg.Match(html);
             return m.Groups[2].Value;
-
         }
 
         public async override Task<string> AsyncTranslate(string text)
         {
-            System.Diagnostics.Stopwatch sw = new System.Diagnostics.Stopwatch();
-
+            Stopwatch sw = new Stopwatch();
 
             driver.Navigate().GoToUrl(targetUrl + lang);
             var cpbtnl = driver.FindElements(By.ClassName("copybutton")).Count;
@@ -301,7 +306,7 @@ namespace WordTranslator
                     await Task.Delay(100);
                     driver.FindElement(By.ClassName("tlid-clear-source-text")).Click();
                 }
-                if (sw.ElapsedMilliseconds > 5000)
+                if (sw.ElapsedMilliseconds > timelimit)
                 {
                     sw.Stop();
                     sw.Reset();
@@ -319,7 +324,7 @@ namespace WordTranslator
             while (driver.FindElements(By.ClassName("result-shield-container")).Count==0)
             {
                 await Task.Delay(200);
-                if (sw.ElapsedMilliseconds > 5000)
+                if (sw.ElapsedMilliseconds > timelimit)
                 {
                     sw.Stop();
                     sw.Reset();
@@ -334,12 +339,99 @@ namespace WordTranslator
             driver.FindElement(By.ClassName("tlid-clear-source-text")).Click();
             await Task.Delay(100);
             return translated;
-
         }
 
-        public void DisposeGoogle()
+    }
+    public class DeepL:BaseEngine
+    {
+        private string targetUrl = @"https://www.deepl.com/ja/translator#en/ja/";
+        public DeepL()
         {
-            driver.Quit();
+            maxLength = 3000;
         }
+        public async override Task<string> AsyncTranslate(string text)
+        {
+            Stopwatch sw = new Stopwatch();
+            driver.Navigate().GoToUrl(targetUrl);
+            var  JudgeLength = 30;
+
+ 
+            driver.FindElement(By.ClassName("lmt__source_textarea")).SendKeys(text);
+            var button_css = "div.lmt__target_toolbar__copy button";
+
+            var button = driver.FindElement(By.CssSelector(button_css));
+
+
+            //Clipboard.Clear();
+            //string ClipText="";
+            //while(ClipText=="")
+            //{
+            //    button.Click();
+            //    await Task.Delay(500);
+            //    if(Clipboard.ContainsText())
+            //    {
+            //        ClipText = Clipboard.GetText();
+            //    }       
+            //}
+
+            //var translated = ClipText;
+
+            
+
+
+
+
+
+            //string s = "";
+            //string existText = "";
+            //sw.Start();
+            //while (s == "" || existText == prev)
+            //{
+            //    s = driver.FindElement(By.ClassName("lmt__target_textarea")).Text;
+            //    if(s.Length> JudgeLength)
+            //    {
+            //        existText=s.Substring(0,JudgeLength);
+            //    }
+            //    else
+            //    {
+            //        existText = s;
+            //    }
+
+            //    await Task.Delay(200);
+            //    if (sw.ElapsedMilliseconds > timelimit)
+            //    {
+            //        sw.Stop();
+            //        sw.Reset();
+            //        return "";
+            //    }
+            //} 
+
+
+            //sw.Stop();
+            //sw.Reset();
+
+
+
+            //await Task.Delay(3000);
+            //var translatedCol = driver.FindElements(By.ClassName("lmt__target_textarea"));
+            ////var col= driver.FindElement(By.ClassName("lmt__target_textarea")).Text;
+            //var translated = driver.FindElement(By.ClassName("lmt__target_textarea")).Text;
+            //var translated2 = driver.FindElement(By.CssSelector("#dl_translator > div.lmt__sides_container > div.lmt__side_container.lmt__side_container--target > div.lmt__textarea_container > div.lmt__inner_textarea_container > textarea")).Text;
+            //var translated3 = driver.FindElements(By.XPath("//*[@id='dl_translator']/div[1]/div[4]/div[3]/div[1]/textarea"));
+            //var transcol2 = driver.FindElements(By.ClassName("lmt__textarea"));
+
+            //var translated = translatedCol[1].Text;
+
+            if (driver.FindElements(By.ClassName("lmt__clear_text_button")).Count!=0)
+            {
+                driver.FindElement(By.ClassName("lmt__clear_text_button")).Click();
+            }
+
+            await Task.Delay(200);
+
+
+            return translated;
+        }
+
     }
 }
